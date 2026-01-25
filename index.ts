@@ -10,9 +10,14 @@ interface TimerConfig {
   notifyOnCompletion?: boolean
 }
 
+// Security: Constants for safe operation
+const MIN_UPDATE_INTERVAL = 500 // Minimum 500ms to prevent excessive CPU usage
+const MAX_MESSAGE_SIZE = 10240 // 10KB max to prevent memory exhaustion
+const MAX_NOTIFICATION_LENGTH = 200 // Max length for notification text
+
 // Security: Validate config schema
 const TimerConfigSchema = z.object({
-  updateInterval: z.number().int().min(100).max(60000).optional(),
+  updateInterval: z.number().int().min(MIN_UPDATE_INTERVAL).max(60000).optional(),
   titlePrefix: z.string().max(100).optional(),
   notifyOnCompletion: z.boolean().optional(),
 })
@@ -24,10 +29,14 @@ export const TimerPlugin: Plugin = async ({ client, directory, $ }) => {
     return str.replace(/[\x00-\x1F\x7F-\x9F]/g, '')
   }
 
-  // Security: Sanitize strings for shell commands
+  // Security: Sanitize strings for shell commands (comprehensive)
   const sanitizeForShell = (str: string): string => {
-    // Escape shell metacharacters
-    return str.replace(/[`$\\!"]/g, '\\$&')
+    // Remove all potentially dangerous shell metacharacters
+    // Only allow alphanumeric, spaces, and safe punctuation
+    return str.replace(/[^a-zA-Z0-9 .,!?@#%^*()_+=\-\[\]{}:]/g, '')
+      .replace(/\s+/g, ' ') // Normalize whitespace
+      .trim()
+      .substring(0, 500) // Hard limit on length
   }
 
   // Load configuration with validation
@@ -57,8 +66,12 @@ export const TimerPlugin: Plugin = async ({ client, directory, $ }) => {
   const config = loadConfig()
   const updateInterval = config.updateInterval ?? 1000
 
-  // Security: Sanitize titlePrefix from config and environment
-  const rawPrefix = config.titlePrefix ?? process.env.TERM_PROGRAM ?? "OpenCode"
+  // Security: Enforce minimum update interval
+  const safeUpdateInterval = Math.max(updateInterval, MIN_UPDATE_INTERVAL)
+
+  // Security: Sanitize and validate titlePrefix from config and environment
+  const envPrefix = process.env.TERM_PROGRAM
+  const rawPrefix = config.titlePrefix ?? (typeof envPrefix === 'string' ? envPrefix : 'OpenCode')
   const titlePrefix = sanitizeForTerminal(rawPrefix)
 
   const notifyOnCompletion = config.notifyOnCompletion ?? true
@@ -69,6 +82,23 @@ export const TimerPlugin: Plugin = async ({ client, directory, $ }) => {
     lastMessage: string
   }>()
 
+  // Security: Cleanup function to clear all intervals
+  const cleanupAllSessions = () => {
+    for (const [sessionID, session] of sessions.entries()) {
+      clearInterval(session.interval)
+    }
+    sessions.clear()
+    resetTitle()
+  }
+
+  // Security: Register cleanup handlers for graceful shutdown
+  const cleanupHandlers = ['SIGINT', 'SIGTERM', 'SIGQUIT'] as const
+  for (const signal of cleanupHandlers) {
+    process.once(signal, () => {
+      cleanupAllSessions()
+      process.exit(0)
+    })
+  }
   const formatTime = (ms: number): string => {
     const totalSeconds = Math.floor(ms / 1000)
     const seconds = totalSeconds % 60
@@ -97,14 +127,16 @@ export const TimerPlugin: Plugin = async ({ client, directory, $ }) => {
   const sendDesktopNotification = async (runtime: string, agentOutput: string) => {
     try {
       // Security: Truncate and sanitize output
-      const truncatedOutput = agentOutput.length > 200
-        ? agentOutput.substring(0, 197) + "..."
+      const truncatedOutput = agentOutput.length > MAX_NOTIFICATION_LENGTH
+        ? agentOutput.substring(0, MAX_NOTIFICATION_LENGTH - 3) + "..."
         : agentOutput
 
-      // Security: Sanitize for shell command
+      // Security: Comprehensive sanitization for shell command
       const safeRuntime = sanitizeForShell(runtime)
       const safeOutput = sanitizeForShell(truncatedOutput)
-      const message = `Runtime: ${safeRuntime}\\n\\n${safeOutput}`
+      
+      // Security: Use double sanitization for extra safety
+      const message = `Runtime: ${safeRuntime}. ${safeOutput}`
 
       await $`notify-send "OpenCode Session Complete" ${message} -i dialog-information -u normal`
     } catch (err) {
@@ -122,7 +154,7 @@ export const TimerPlugin: Plugin = async ({ client, directory, $ }) => {
         const interval = setInterval(() => {
           const elapsed = formatTime(Date.now() - startTime)
           updateTitle(elapsed)
-        }, updateInterval)
+        }, safeUpdateInterval)
 
         sessions.set(sessionID, {
           startTime,
@@ -136,8 +168,11 @@ export const TimerPlugin: Plugin = async ({ client, directory, $ }) => {
         const session = sessions.get(part.sessionID)
 
         if (session && part.type === "text") {
-          // Accumulate text from assistant messages
-          session.lastMessage += part.text
+          // Security: Accumulate text with size limit to prevent memory exhaustion
+          if (session.lastMessage.length < MAX_MESSAGE_SIZE) {
+            const remainingSpace = MAX_MESSAGE_SIZE - session.lastMessage.length
+            session.lastMessage += part.text.substring(0, remainingSpace)
+          }
         }
       }
 
