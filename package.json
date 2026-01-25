@@ -1,0 +1,34 @@
+{
+  "name": "opencode-timer-plugin",
+  "version": "1.0.3",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "description": "OpenCode plugin that displays session elapsed time in terminal title with desktop notifications",
+  "keywords": [
+    "opencode",
+    "plugin",
+    "timer",
+    "terminal",
+    "notifications"
+  ],
+  "files": [
+    "dist/",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "*",
+    "@types/node": "^25.0.10",
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "*"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  }
+}
