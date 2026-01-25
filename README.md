@@ -204,5 +204,6 @@ Uses standard ANSI escape sequences (`\x1b]0;...\x07`).
 MIT
 
 ## Author
+alexcodeplace 
 
 Created for OpenCode CLI tool
