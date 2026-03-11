@@ -78,15 +78,19 @@ export const TimerPlugin: Plugin = async ({ client, directory, $ }) => {
 
   const sessions = new Map<string, {
     startTime: number
-    interval: NodeJS.Timeout
     lastMessage: string
   }>()
 
+  let activeSessionIDs: string[] = []
+  let globalInterval: NodeJS.Timeout | null = null
+
   // Security: Cleanup function to clear all intervals
   const cleanupAllSessions = () => {
-    for (const [sessionID, session] of sessions.entries()) {
-      clearInterval(session.interval)
+    if (globalInterval) {
+      clearInterval(globalInterval)
+      globalInterval = null
     }
+    activeSessionIDs = []
     sessions.clear()
     resetTitle()
   }
@@ -124,6 +128,32 @@ export const TimerPlugin: Plugin = async ({ client, directory, $ }) => {
     process.stdout.write(`\x1b]0;${safePrefix}\x07`)
   }
 
+  const updateTitleImmediate = () => {
+    if (activeSessionIDs.length > 0) {
+      const activeID = activeSessionIDs[activeSessionIDs.length - 1]
+      const session = sessions.get(activeID)
+      if (session) {
+        const elapsed = formatTime(Date.now() - session.startTime)
+        updateTitle(elapsed)
+      }
+    } else {
+      resetTitle()
+    }
+  }
+
+  const startGlobalInterval = () => {
+    if (globalInterval) return
+    globalInterval = setInterval(updateTitleImmediate, safeUpdateInterval)
+  }
+
+  const stopGlobalInterval = () => {
+    if (globalInterval) {
+      clearInterval(globalInterval)
+      globalInterval = null
+    }
+    resetTitle()
+  }
+
   const sendDesktopNotification = async (runtime: string, agentOutput: string) => {
     try {
       // Security: Truncate and sanitize output
@@ -151,21 +181,26 @@ export const TimerPlugin: Plugin = async ({ client, directory, $ }) => {
         const sessionID = event.properties.info.id
         const startTime = Date.now()
 
-        const interval = setInterval(() => {
-          const elapsed = formatTime(Date.now() - startTime)
-          updateTitle(elapsed)
-        }, safeUpdateInterval)
-
         sessions.set(sessionID, {
           startTime,
-          interval,
           lastMessage: ""
         })
+        activeSessionIDs.push(sessionID)
+        startGlobalInterval()
       }
 
       if (event.type === "message.part.updated") {
         const part = event.properties.part
-        const session = sessions.get(part.sessionID)
+        const sessionID = part.sessionID
+        
+        // Move to end to mark as most recently active
+        const index = activeSessionIDs.indexOf(sessionID)
+        if (index !== -1) {
+          activeSessionIDs.splice(index, 1)
+          activeSessionIDs.push(sessionID)
+        }
+
+        const session = sessions.get(sessionID)
 
         if (session && part.type === "text") {
           // Security: Accumulate text with size limit to prevent memory exhaustion
@@ -181,11 +216,15 @@ export const TimerPlugin: Plugin = async ({ client, directory, $ }) => {
         const session = sessions.get(sessionID)
 
         if (session) {
-          clearInterval(session.interval)
           const finalTime = formatTime(Date.now() - session.startTime)
 
-          // Immediately reset title to original
-          resetTitle()
+          activeSessionIDs = activeSessionIDs.filter(id => id !== sessionID)
+          if (activeSessionIDs.length === 0) {
+            stopGlobalInterval()
+          } else {
+            // Update title to show the next active session timer immediately
+            updateTitleImmediate()
+          }
 
           // Send desktop notification with runtime and agent output
           if (notifyOnCompletion) {
@@ -205,8 +244,12 @@ export const TimerPlugin: Plugin = async ({ client, directory, $ }) => {
         const session = sessions.get(sessionID)
 
         if (session) {
-          clearInterval(session.interval)
-          resetTitle()
+          activeSessionIDs = activeSessionIDs.filter(id => id !== sessionID)
+          if (activeSessionIDs.length === 0) {
+            stopGlobalInterval()
+          } else {
+            updateTitleImmediate()
+          }
           sessions.delete(sessionID)
         }
       }
